@@ -1,5 +1,6 @@
 import dftd4
 from dftd4.interface import DampingParam, DispersionModel
+from dftd4.parameters import get_damping_param
 import numpy as np
 import os
 
@@ -108,10 +109,10 @@ def determine_Ns(atomic_number, data):
     ref = data['refn'][atomic_number]
     ngw = np.ones(ref)
     for ir in range(ref):
-        icn = np.min((round(data['refcn'][ir][atomic_number]), max_cn))
+        icn = np.min((round(data['refcovcn'][ir][atomic_number]), max_cn))
         cnc[icn] = cnc[icn] + 1
     for ir in range(ref):
-        icn = cnc[np.min((round(data['refcn'][ir][atomic_number]), max_cn))]
+        icn = cnc[np.min((round(data['refcovcn'][ir][atomic_number]), max_cn))]
         ngw[ir] = icn*(icn+1)/2
     return ngw
 
@@ -177,22 +178,22 @@ def zeta(q_A, atomic_number, ref_number, data):
 
 #Three functions that uses Grimme's D4 library to compute charges, CNs, and C6 coefficients for a given geometry
 #Used here for comparison with our implementation 
-def get_classical_charges(numbers, positions,method="blyp"):
+def get_classical_charges(numbers, positions):
     model = DispersionModel(numbers, positions)
     res = model.get_properties()
     return res['partial charges']
 
-def get_coordination_numbers(numbers, positions,method="blyp"):
+def get_coordination_numbers(numbers, positions):
     model = DispersionModel(numbers, positions)
     res = model.get_properties()
     return res['coordination numbers']
 
-def get_grimmes_D4_C6(numbers, positions,method="blyp"):
+def get_grimmes_D4_C6(numbers, positions,):
     model = DispersionModel(numbers, positions)
     res = model.get_properties()
     return res['c6 coefficients']
     
-def calculate_c6(atomic_number_A, CN_A, q_A, atomic_number_B, CN_B, q_B, beta_2, data):
+def calculate_C6(atomic_number_A, CN_A, q_A, atomic_number_B, CN_B, q_B, beta_2, data):
     #Computes C6_AB coefficient
     N_A_ref = data['refn'][atomic_number_A]
     N_B_ref = data['refn'][atomic_number_B]
@@ -209,8 +210,59 @@ def calculate_c6(atomic_number_A, CN_A, q_A, atomic_number_B, CN_B, q_B, beta_2,
             C6 += W_A*zetta_A*W_B*zetta_B*ref_c6
     return C6
 
-#REFERENCE DATA READING PREPARATION AND CURATION
+def find_cos_product(a,b,c):
+    A = a**2+b**2-c**2
+    B = b**2+c**2-a**2
+    C = c**2+a**2-b**2
+    return A*B*C/(8*a**2*b**2*c**2)
 
+def calculate_C8(C6_AB,I,J):
+    return 3*C6_AB*np.sqrt(np.sqrt(I+1)*np.sqrt(J+1)*R4R2[I]*R4R2[J]/4)
+
+def BJ(ATOM_1, ATOM_2, ALPHA_1, ALPHA_2, C6, C8, N):
+    I, J = int(ATOM_1[0]-1), int(ATOM_2[0]-1)
+    R_IJ_cutoff = np.sqrt(C8/C6)
+    R_IJ = np.linalg.norm(ATOM_1[1:]-ATOM_2[1:])/AUTOANG
+    return R_IJ**N/(R_IJ**N + (ALPHA_1*R_IJ_cutoff + ALPHA_2)**N)
+
+def TDB(R_damp):
+    return 1/(1+6*R_damp**(-16))
+
+def read_XYZ(file_name):
+    with open(file_name, 'r') as f:
+        file = f.read().split('\n')
+    clean_file = []
+    for line in file:
+        if line != '>' and line != '':
+            clean_file.append(line)
+    LEN = len(clean_file)
+    NUM_STRUCT = LEN//(int(clean_file[0])+2)
+    COORDS = []
+    for i in range(NUM_STRUCT):
+        structure = []
+        for atoms in range(int(clean_file[0])):
+            ind, x, y, z = clean_file[atoms+2+i*(int(clean_file[0])+2)].split()
+            ind = Periodic_Table[ind]
+            x, y, z = float(x), float(y), float(z)
+            structure.append([ind,x,y,z])
+        COORDS.append(structure)
+    return np.array(COORDS)
+
+#REFERENCE DATA READING PREPARATION AND CURATION
+Periodic_Table = {
+    "H": 1, "He": 2, "Li": 3, "Be": 4, "B": 5, "C": 6, "N": 7, "O": 8, "F": 9, "Ne": 10,
+    "Na": 11, "Mg": 12, "Al": 13, "Si": 14, "P": 15, "S": 16, "Cl": 17, "Ar": 18, "K": 19, "Ca": 20,
+    "Sc": 21, "Ti": 22, "V": 23, "Cr": 24, "Mn": 25, "Fe": 26, "Co": 27, "Ni": 28, "Cu": 29, "Zn": 30,
+    "Ga": 31, "Ge": 32, "As": 33, "Se": 34, "Br": 35, "Kr": 36, "Rb": 37, "Sr": 38, "Y": 39, "Zr": 40,
+    "Nb": 41, "Mo": 42, "Tc": 43, "Ru": 44, "Rh": 45, "Pd": 46, "Ag": 47, "Cd": 48, "In": 49, "Sn": 50,
+    "Sb": 51, "Te": 52, "I": 53, "Xe": 54, "Cs": 55, "Ba": 56, "La": 57, "Ce": 58, "Pr": 59, "Nd": 60,
+    "Pm": 61, "Sm": 62, "Eu": 63, "Gd": 64, "Tb": 65, "Dy": 66, "Ho": 67, "Er": 68, "Tm": 69, "Yb": 70,
+    "Lu": 71, "Hf": 72, "Ta": 73, "W": 74, "Re": 75, "Os": 76, "Ir": 77, "Pt": 78, "Au": 79, "Hg": 80,
+    "Tl": 81, "Pb": 82, "Bi": 83, "Po": 84, "At": 85, "Rn": 86, "Fr": 87, "Ra": 88, "Ac": 89, "Th": 90,
+    "Pa": 91, "U": 92, "Np": 93, "Pu": 94, "Am": 95, "Cm": 96, "Bk": 97, "Cf": 98, "Es": 99, "Fm": 100,
+    "Md": 101, "No": 102, "Lr": 103, "Rf": 104, "Db": 105, "Sg": 106, "Bh": 107, "Hs": 108, "Mt": 109,
+    "Ds": 110, "Rg": 111, "Cn": 112, "Nh": 113, "Fl": 114, "Mc": 115, "Lv": 116, "Ts": 117, "Og": 118}
+AUTOANG = 0.529177249
 max_elem = 118
 beta_1 = 3
 gc = 2
@@ -222,6 +274,11 @@ data['Ns_values'] = np.zeros((7, max_elem))
 for atom in range(max_elem):
     ref = data['refn'][atom]
     data['Ns_values'][:ref,atom] = determine_Ns(atom, data)
+
+r4r2_path = os.path.join(current_dir, "R2R4.txt")
+R4R2 = np.genfromtxt(r4r2_path, delimiter=",")
+R4R2 = R4R2[~np.isnan(R4R2)] 
+
 data['chemical_hardness'] = np.array([0.47259288, 0.92203391, 0.17452888, 0.25700733, 0.33949086,
                                       0.42195412, 0.50438193, 0.58691863, 0.66931351, 0.75191607,
                                       0.17964105, 0.22157276, 0.26348578, 0.30539645, 0.34734014,
@@ -266,3 +323,39 @@ for atomic_number in range(max_elem):
         aiw = sec_data['sscale'][_is]*sec_data['secaiw'][:,_is]*(np.exp(beta_1*(1-np.exp(data['chemical_hardness'][_is]*gc*(1-iz/(iz+data['clsh'][ref_i][atomic_number]))))))
         alpha = np.max((data['ascale'][ref_i][atomic_number]*(data['alphaiw'][:,ref_i,atomic_number]-data['hcount'][ref_i][atomic_number]*aiw),np.zeros(23)),axis=0)
         data['alphaiw'][:,ref_i,atomic_number] = alpha
+
+
+def D4(COORDS, S6, S8, ALPHA_1, ALPHA_2, beta_2=6, data=data, smbd=1.0):
+    Dispersion_energy_E6 = 0
+    Dispersion_energy_E8 = 0
+    Dispersion_energy_E_ABC = 0
+    CN_array = get_coordination_numbers(COORDS[:,0], COORDS[:,1:]/AUTOANG)
+    CHARGE_array = get_classical_charges(COORDS[:,0], COORDS[:,1:]/AUTOANG)
+    C6_list = np.zeros((len(COORDS),len(COORDS)))
+    C8_list = np.zeros((len(COORDS),len(COORDS)))
+    for d1, ATOM_1 in enumerate(COORDS[:-1]):
+        for d2, ATOM_2 in enumerate(COORDS[d1+1:]):
+            R_IJ = np.linalg.norm(ATOM_1[1:]-ATOM_2[1:])/AUTOANG #Divide by the transformation from A to borh
+            I, J = int(ATOM_1[0]-1), int(ATOM_2[0]-1)
+            C6_AB = calculate_C6(I, CN_array[d1], CHARGE_array[d1], J, CN_array[d2+d1+1], CHARGE_array[d2+d1+1], beta_2, data)
+            C6_list[d1][d2+d1+1] = calculate_C6(I, CN_array[d1], 0, J, CN_array[d2+d1+1], 0, beta_2, data)
+            C8_AB = calculate_C8(C6_AB,I,J)
+            C8_list[d1][d2+d1+1] = calculate_C8(C6_list[d1][d2+d1+1],I,J)
+            Dispersion_energy_E6 += S6*BJ(ATOM_1, ATOM_2, ALPHA_1, ALPHA_2, C6_AB, C8_AB, 6)*C6_AB/R_IJ**6
+            Dispersion_energy_E8 += S8*BJ(ATOM_1, ATOM_2, ALPHA_1, ALPHA_2, C6_AB, C8_AB, 8)*C8_AB/R_IJ**8
+    C6_list += C6_list.T
+    C8_list += C8_list.T
+    for d1, ATOM_1 in enumerate(COORDS[:-2]):
+        for d2, ATOM_2 in enumerate(COORDS[d1+1:-1]):    
+            for d3, ATOM_3 in enumerate(COORDS[d1+d2+2:]): 
+                rij = np.linalg.norm(ATOM_1[1:]-ATOM_2[1:])/AUTOANG
+                rjk = np.linalg.norm(ATOM_2[1:]-ATOM_3[1:])/AUTOANG
+                rki = np.linalg.norm(ATOM_3[1:]-ATOM_1[1:])/AUTOANG
+                cos_factor = find_cos_product(rij, rjk, rki)
+                C9 = np.sqrt(C6_list[d1][d1+d2+1]*C6_list[d1+d2+1][d1+d2+d3+2]*C6_list[d1+d2+d3+2][d1])
+                R_damp_ij = (ALPHA_1*np.sqrt(C8_list[d1][d1+d2+1]/C6_list[d1][d1+d2+1])+ALPHA_2)
+                R_damp_jk = (ALPHA_1*np.sqrt(C8_list[d1+d2+1][d1+d2+d3+2]/C6_list[d1+d2+1][d1+d2+d3+2])+ALPHA_2)
+                R_damp_ki = (ALPHA_1*np.sqrt(C8_list[d1+d2+d3+2][d1]/C6_list[d1+d2+d3+2][d1])+ALPHA_2)
+                R_damp = ((rij*rjk*rki)/(R_damp_ij*R_damp_jk*R_damp_ki))**(1/3)
+                Dispersion_energy_E_ABC += smbd*TDB(R_damp)*C9*(3*cos_factor+1)/(rij*rjk*rki)**3
+    return -(Dispersion_energy_E8+Dispersion_energy_E6-Dispersion_energy_E_ABC), C6_list, Dispersion_energy_E6, Dispersion_energy_E8
