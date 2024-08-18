@@ -47,7 +47,7 @@ def read_fortran_data(file_path):
     max_elem = 118
     
     data = {
-        'refn': np.zeros(max_elem, dtype=np.int64), #numer of references
+        'refn': np.zeros(max_elem, dtype=int), #numer of references
         'refq': np.zeros((7, max_elem)),
         'refh': np.zeros((7, max_elem)),
         'gffq': np.zeros((7, max_elem)),
@@ -148,7 +148,13 @@ def calculate_ref_C6(atomic_number_i, ref_i, atomic_number_j, ref_j, data):
     alpha_product = data['alphaiw'][:,ref_i,atomic_number_i]*data['alphaiw'][:,ref_j,atomic_number_j]
     c6 = thopi*np.sum(alpha_product*weights)
     return c6
-    
+
+def weight(CN_A, atomic_number, ref_number, beta_2, data, weight_method='gaussian', gaussian_window=None):
+    # Keep wrapper method for later implementations
+    if weight_method == 'gaussian':
+        return gaussian_weight(CN_A, atomic_number, ref_number, beta_2, data)
+    return 0.0
+
 def gaussian_weight(CN_A, atomic_number, ref_number, beta_2, data):
     #Calculates gaussian weights from eq 8 for a particular reference
     N_A_ref = data['refn'][atomic_number]
@@ -163,7 +169,7 @@ def gaussian_weight(CN_A, atomic_number, ref_number, beta_2, data):
         for j in range(1,int(Ns[A_ref]+1)):
             denominator += np.exp(-beta_2*j*(CN_A - CN_A_ref)**2)
     return numerator/denominator
-    
+   
 def zeta(q_A, atomic_number, ref_number, data):
     #Zeta function from eq 2
     ga = 3 #Charge scaling height (beta_1)
@@ -193,22 +199,95 @@ def get_grimmes_D4_C6(numbers, positions,):
     res = model.get_properties()
     return res['c6 coefficients']
     
-def calculate_C6(atomic_number_A, CN_A, q_A, atomic_number_B, CN_B, q_B, beta_2, data):
+
+def get_weight_factors(atomic_number, CN_A, beta_2, data):
+    n_window = 48
+    # Window extent: 2 sigma
+    x_window = 2.0 / np.sqrt(beta_2)
+    n_refdata = data['refn'][atomic_number]
+    linear_window = np.linspace(-x_window, x_window, num=n_window+1)
+    gaussian_window = np.exp(-beta_2 * linear_window * linear_window)
+    gaussian_window /= np.sum(gaussian_window)
+    CN_A_ref = np.array([data['refcovcn'][ref][atomic_number] for ref in range(n_refdata)])
+
+    def weight_factors(cn):
+        weights = np.zeros(CN_A_ref.shape, dtype=float)
+        if cn <= np.min(CN_A_ref):
+            weights[np.argmin(CN_A_ref)] = 1
+            return weights
+        if cn >= np.max(CN_A_ref):
+            weights[np.argmax(CN_A_ref)] = 1
+            return weights
+        
+        # Find the left neighbour, i. e. biggest value smaller than cn
+        mask_left = CN_A_ref < cn
+        left_cn = np.max(CN_A_ref[mask_left])
+        index_left = np.where(CN_A_ref == left_cn)[0][0]
+
+        # Find the right neighbour, i. e. smallest value bigger than cn
+        mask_right = CN_A_ref > cn
+        right_cn = np.min(CN_A_ref[mask_right])
+        index_right = np.where(CN_A_ref == right_cn)[0][0]
+
+        # Number between 0 and 1 that encodes where cn is in the interval
+        cn_int = (cn - left_cn) / (right_cn - left_cn)
+
+        weights[index_right] = cn_int
+        weights[index_left] = 1 - cn_int
+            
+        return weights
+
+    total_weights = np.zeros(CN_A_ref.shape, dtype=float)
+
+    for i, cn_i in enumerate(linear_window):
+        gweight = weight_factors(cn_i + CN_A)
+        total_weights += gweight * gaussian_window[i]
+
+    return total_weights
+
+def calculate_C6(atomic_number_A, CN_A, q_A, atomic_number_B, CN_B, q_B, beta_2, data, weight_method='gaussian'):
+    # Escape concurrent evaluation of many datapoints
+    if isinstance(CN_A, tuple):
+        return tuple(calculate_C6(atomic_number_A, CN, q_A, atomic_number_B, CN_B, 
+                                  q_B, beta_2, data, weight_method) for CN in CN_A)
+    elif isinstance(CN_A, list):
+        return [calculate_C6(atomic_number_A, CN, q_A, atomic_number_B, CN_B, 
+                             q_B, beta_2, data, weight_method) for CN in CN_A]
+    elif isinstance(CN_A, np.ndarray):
+        return np.array([calculate_C6(atomic_number_A, CN, q_A, atomic_number_B, CN_B, 
+                                      q_B, beta_2, data, weight_method) for CN in CN_A])
+
     #Computes C6_AB coefficient
     N_A_ref = data['refn'][atomic_number_A]
     N_B_ref = data['refn'][atomic_number_B]
     C6 = 0
-    for ref_i in range(N_A_ref):
-        for ref_j in range(N_B_ref):
-            ref_c6 = calculate_ref_C6(atomic_number_A, ref_i, atomic_number_B, ref_j, data)
-            #print(f"REF: {ref_i} (CN={data['refcn'][ref_i][atomic_number_A]}), {ref_j} (CN={data['refcn'][ref_j][atomic_number_B]}). C6: {ref_c6}")
-            W_A = gaussian_weight(CN_A, atomic_number_A, ref_i, beta_2, data)
+    # Precompute weights to avoid double computation
+    weights_A = [weight(CN_A, atomic_number_A, ref_i, beta_2, data, weight_method) 
+                 for ref_i in range(N_A_ref)]
+    weights_B = [weight(CN_B, atomic_number_B, ref_j, beta_2, data, weight_method)
+                 for ref_j in range(N_B_ref)]
+
+    if weight_method == 'gaussian':
+        for ref_i in range(N_A_ref):
             zetta_A = zeta(q_A, atomic_number_A, ref_i, data)
-            W_B = gaussian_weight(CN_B, atomic_number_B, ref_j, beta_2, data)
-            zetta_B = zeta(q_B, atomic_number_B, ref_j, data)
-            #print(f'W_A*W_B: {W_A*W_B}')
-            C6 += W_A*zetta_A*W_B*zetta_B*ref_c6
+            for ref_j in range(N_B_ref):
+                zetta_B = zeta(q_B, atomic_number_B, ref_j, data)
+                ref_c6 = calculate_ref_C6(atomic_number_A, ref_i, atomic_number_B, ref_j, data)
+                C6 += weights_A[ref_i] * weights_B[ref_j] * zetta_A * zetta_B * ref_c6
+                
+    elif weight_method == 'soft_bilinear':
+        weight_factors_A = get_weight_factors(atomic_number_A, CN_A, beta_2, data)
+        weight_factors_B = get_weight_factors(atomic_number_B, CN_B, beta_2, data)
+
+        for ref_i in range(N_A_ref):
+            zetta_A = zeta(q_A, atomic_number_A, ref_i, data)
+            for ref_j in range(N_B_ref):
+                ref_c6 = calculate_ref_C6(atomic_number_A, ref_i, atomic_number_B, ref_j, data)
+                zetta_B = zeta(q_B, atomic_number_B, ref_j, data)
+                C6 += weight_factors_A[ref_i] * weight_factors_B[ref_j] * zetta_A * zetta_B * ref_c6
+        
     return C6
+
 
 def find_cos_product(a,b,c):
     A = a**2+b**2-c**2
