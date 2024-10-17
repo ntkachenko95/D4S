@@ -1,4 +1,5 @@
-from d4s import D4S
+from D4S import D4S
+from dftd4.parameters import get_damping_param
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -8,7 +9,7 @@ COORDS = D4S.read_XYZ('Test_geometry_Li_Bz.xyz')
 Functional = "BLYP"
 charge=1
 
-params = D4S.get_damping_param(Functional)
+params = get_damping_param(Functional)
 S6=params['s6']
 S8=params['s8']
 a1=params['a1']
