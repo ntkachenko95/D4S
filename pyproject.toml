@@ -1,0 +1,17 @@
+[tool.poetry]
+name = "d4s"
+version = "0.1.0"
+description = "The D4S package allows for the calculation of D4S and D4SL energies"
+authors = ["Nikolay Tkachenko, Linus Bjarne Dittmer, Rebecca Tomann"]
+license = "LICENSE"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+numpy = "^2.1.2"
+dftd4 = "^3.7.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
